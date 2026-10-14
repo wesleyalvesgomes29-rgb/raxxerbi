@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Menu, Bot } from 'lucide-react';
+import { Menu, Bot, Cloud } from 'lucide-react';
 import { Header } from './components/Header';
 import { DashboardView } from './components/DashboardView';
 import { MyDayView } from './components/MyDayView';
@@ -16,6 +16,8 @@ import { SalesView } from './components/SalesView';
 import { CommercialBIDashboard } from './components/CommercialBIDashboard';
 import { Sidebar } from './components/Sidebar';
 import { useCommercialData } from './hooks/useCommercialData';
+import { CloudSyncPanel } from './components/CloudSyncPanel';
+import { initializeCloudSync } from './services/cloudSync';
 
 import {
   DailyHistoryLog,
@@ -31,16 +33,13 @@ import {
   WeeklyReview,
 } from './types';
 
-import {
-  DEFAULT_USER_PROFILE,
-  INITIAL_DAILY_HISTORY,
-  INITIAL_GOALS,
-  INITIAL_MEMORIES,
-  INITIAL_PROJECTS,
-  INITIAL_TASKS,
-  INITIAL_WEEKLY_REVIEWS,
-} from './utils/initialData';
+import { DEFAULT_USER_PROFILE } from './utils/initialData';
 import { getSaoPauloDateString, getSaoPauloWeekday } from './utils/date';
+
+function persistLocalState(key: string, value: unknown): void {
+  localStorage.setItem(key, JSON.stringify(value));
+  window.dispatchEvent(new CustomEvent('raxxer_storage_change', { detail: { key } }));
+}
 
 // Helper to sanitize local storage data and strip legacy seed or "Alex" references
 const getSanitizedLocalStorage = <T,>(key: string, fallback: T): T => {
@@ -48,20 +47,15 @@ const getSanitizedLocalStorage = <T,>(key: string, fallback: T): T => {
     const raw = localStorage.getItem(key);
     if (!raw) return fallback;
 
-    let cleanRaw = raw;
-    if (cleanRaw.includes('Alex') || cleanRaw.includes('alex')) {
-      cleanRaw = cleanRaw.replace(/Alex/g, 'Wesley').replace(/alex/g, 'wesley');
-    }
-
-    const parsed = JSON.parse(cleanRaw);
+    const parsed = JSON.parse(raw);
 
     if (key === 'sb_profile') {
       const p = parsed as UserProfile;
       return {
         ...DEFAULT_USER_PROFILE,
         ...p,
-        nome: p.nome && !p.nome.includes('Alex') && p.nome !== 'Usuário' ? p.nome : 'Wesley Gomes',
-        comoSerChamado: p.comoSerChamado && !p.comoSerChamado.includes('Alex') ? p.comoSerChamado : 'Wesley',
+        nome: p.nome && p.nome !== 'Usuário' ? p.nome : DEFAULT_USER_PROFILE.nome,
+        comoSerChamado: p.comoSerChamado || DEFAULT_USER_PROFILE.comoSerChamado,
       } as unknown as T;
     }
 
@@ -70,10 +64,9 @@ const getSanitizedLocalStorage = <T,>(key: string, fallback: T): T => {
       const isLegacySeedId = (id: string) => /^(task|goal|proj|mem|review)-\d+$/.test(id);
       const filtered = parsed.filter((item: any) => {
         if (!item) return false;
+        // Remove only stable legacy seed IDs. Never discard a user's real record
+        // merely because its title happens to resemble an old example.
         if (item.id && isLegacySeedId(String(item.id))) return false;
-        if (item.titulo && (item.titulo.includes('energia elétrica') || item.titulo.includes('Caminhada matinal') || item.titulo.includes('Perfil do Usuário'))) return false;
-        if (item.objetivo && item.objetivo.includes('Execução Diária Sem Pendências')) return false;
-        if (item.nome && item.nome.includes('Organização Financeira')) return false;
         return true;
       });
       return filtered as unknown as T;
@@ -114,27 +107,27 @@ export default function App() {
   );
 
   const [memories, setMemories] = useState<MemoryItem[]>(() =>
-    getSanitizedLocalStorage<MemoryItem[]>('sb_memories', INITIAL_MEMORIES)
+    getSanitizedLocalStorage<MemoryItem[]>('sb_memories', [])
   );
 
   const [tasks, setTasks] = useState<TaskItem[]>(() =>
-    getSanitizedLocalStorage<TaskItem[]>('sb_tasks', INITIAL_TASKS)
+    getSanitizedLocalStorage<TaskItem[]>('sb_tasks', [])
   );
 
   const [goals, setGoals] = useState<GoalItem[]>(() =>
-    getSanitizedLocalStorage<GoalItem[]>('sb_goals', INITIAL_GOALS)
+    getSanitizedLocalStorage<GoalItem[]>('sb_goals', [])
   );
 
   const [projects, setProjects] = useState<ProjectItem[]>(() =>
-    getSanitizedLocalStorage<ProjectItem[]>('sb_projects', INITIAL_PROJECTS)
+    getSanitizedLocalStorage<ProjectItem[]>('sb_projects', [])
   );
 
   const [reviews, setReviews] = useState<WeeklyReview[]>(() =>
-    getSanitizedLocalStorage<WeeklyReview[]>('sb_reviews', INITIAL_WEEKLY_REVIEWS)
+    getSanitizedLocalStorage<WeeklyReview[]>('sb_reviews', [])
   );
 
   const [dailyHistory, setDailyHistory] = useState<DailyHistoryLog[]>(() =>
-    getSanitizedLocalStorage<DailyHistoryLog[]>('sb_daily_history', INITIAL_DAILY_HISTORY)
+    getSanitizedLocalStorage<DailyHistoryLog[]>('sb_daily_history', [])
   );
 
   // Keep daily history updated with real current task counts for today
@@ -179,7 +172,7 @@ export default function App() {
       } else {
         updated = [...realPrev, todayLog];
       }
-      localStorage.setItem('sb_daily_history', JSON.stringify(updated));
+      persistLocalState('sb_daily_history', updated);
       return updated;
     });
   }, [tasks]);
@@ -190,6 +183,7 @@ export default function App() {
   const [isAIChatOpen, setIsAIChatOpen] = useState<boolean>(false);
   const [aiInitialPrompt, setAiInitialPrompt] = useState<string | undefined>(undefined);
   const [isQuickMemoryOpen, setIsQuickMemoryOpen] = useState<boolean>(false);
+  const [isCloudSyncOpen, setIsCloudSyncOpen] = useState<boolean>(false);
 
   // Sincroniza abas com URL e histórico do navegador
   useEffect(() => {
@@ -224,28 +218,31 @@ export default function App() {
 
   // Sync to localStorage
   useEffect(() => {
-    localStorage.setItem('sb_profile', JSON.stringify(profile));
+    persistLocalState('sb_profile', profile);
   }, [profile]);
 
   useEffect(() => {
-    localStorage.setItem('sb_memories', JSON.stringify(memories));
+    persistLocalState('sb_memories', memories);
   }, [memories]);
 
   useEffect(() => {
-    localStorage.setItem('sb_tasks', JSON.stringify(tasks));
+    persistLocalState('sb_tasks', tasks);
   }, [tasks]);
 
   useEffect(() => {
-    localStorage.setItem('sb_goals', JSON.stringify(goals));
+    persistLocalState('sb_goals', goals);
   }, [goals]);
 
   useEffect(() => {
-    localStorage.setItem('sb_projects', JSON.stringify(projects));
+    persistLocalState('sb_projects', projects);
   }, [projects]);
 
   useEffect(() => {
-    localStorage.setItem('sb_reviews', JSON.stringify(reviews));
+    persistLocalState('sb_reviews', reviews);
   }, [reviews]);
+
+  // Inicia sincronização contínua apenas depois da hidratação local; a ativação exige migração manual.
+  useEffect(() => initializeCloudSync(), []);
 
   // Handlers
   const handleCompleteInterview = (
@@ -623,6 +620,18 @@ export default function App() {
           </main>
         </>
       )}
+
+      {/* Acesso explícito à sincronização segura com D1 */}
+      <button
+        onClick={() => setIsCloudSyncOpen(true)}
+        className="fixed bottom-4 right-4 z-[70] inline-flex items-center gap-2 rounded-full border border-cyan-500/40 bg-[#0B1730] px-4 py-3 text-sm font-semibold text-cyan-200 shadow-xl transition hover:border-cyan-300 hover:bg-[#102342]"
+        title="Backup e sincronização dos dados"
+        aria-label="Abrir backup e sincronização dos dados"
+      >
+        <Cloud className="h-4 w-4" />
+        <span className="hidden sm:inline">Dados e backup</span>
+      </button>
+      {isCloudSyncOpen && <CloudSyncPanel onClose={() => setIsCloudSyncOpen(false)} />}
 
       {/* Persistent AI Chat Advisor Drawer */}
       <AIChatDrawer
