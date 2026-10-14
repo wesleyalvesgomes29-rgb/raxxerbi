@@ -13,6 +13,7 @@ import {
   BookmarkPlus,
 } from 'lucide-react';
 import { AIChatMessage, DailyHistoryLog, GoalItem, MemoryItem, TaskItem, TaskPriority, TaskStatus, UserProfile } from '../types';
+import { getSaoPauloDateString } from '../utils/date';
 
 interface AIChatDrawerProps {
   isOpen: boolean;
@@ -25,8 +26,8 @@ interface AIChatDrawerProps {
   initialPrompt?: string;
   onAddMemory: (memory: Omit<MemoryItem, 'id' | 'data'>) => void;
   onAddTask?: (task: Omit<TaskItem, 'id' | 'data'> & { data?: string }) => void;
-  onUpdateTaskStatus?: (searchTitleOrId: string, status: TaskStatus) => void;
-  onRescheduleTask?: (searchTitleOrId: string, newDate: string) => void;
+  onUpdateTaskStatus?: (searchTitleOrId: string, status: TaskStatus) => boolean;
+  onRescheduleTask?: (searchTitleOrId: string, newDate: string) => boolean;
   onDeleteTask?: (searchTitleOrId: string) => void;
   onAddGoal?: (goal: Omit<GoalItem, 'id' | 'dataCriacao'>) => void;
 }
@@ -122,13 +123,15 @@ export const AIChatDrawer: React.FC<AIChatDrawerProps> = ({
       const data = await response.json();
 
       // Executar ações de mutação retornadas pela IA
+      let actionWarning: string | null = null;
       if (data.actions && Array.isArray(data.actions)) {
         data.actions.forEach((act: any) => {
           switch (act.type) {
             case 'add_memory':
+              if (typeof act.titulo !== 'string' || !act.titulo.trim() || typeof act.conteudo !== 'string' || !act.conteudo.trim()) break;
               onAddMemory({
                 categoria: act.categoria || 'identidade',
-                titulo: act.titulo || 'Memória Aprendida',
+                titulo: act.titulo,
                 conteudo: act.conteudo,
                 importancia: act.importancia || 'alta',
                 origin: 'auto_extracted',
@@ -136,13 +139,13 @@ export const AIChatDrawer: React.FC<AIChatDrawerProps> = ({
               break;
 
             case 'add_task':
-              if (onAddTask) {
+              if (onAddTask && typeof act.titulo === 'string' && act.titulo.trim()) {
                 onAddTask({
                   titulo: act.titulo || 'Nova Tarefa',
                   descricao: act.descricao || '',
                   prioridade: (act.prioridade as TaskPriority) || 'media',
-                  horarioSugerido: act.horarioSugerido,
-                  tempoEstimadoMinutos: act.tempoEstimadoMinutos || 30,
+                  horario: act.horarioSugerido,
+                  dataCriacao: getSaoPauloDateString(),
                   concluida: false,
                   status: 'pendente',
                   data: act.data,
@@ -151,25 +154,33 @@ export const AIChatDrawer: React.FC<AIChatDrawerProps> = ({
               break;
 
             case 'update_task_status':
-              if (onUpdateTaskStatus) {
-                onUpdateTaskStatus(act.searchTitleOrId, act.status);
+              if (
+                onUpdateTaskStatus &&
+                typeof act.searchTitleOrId === 'string' && act.searchTitleOrId.trim() &&
+                ['pendente', 'em_andamento', 'concluida', 'adiada', 'cancelada'].includes(act.status)
+              ) {
+                const applied = onUpdateTaskStatus(act.searchTitleOrId, act.status);
+                if (!applied) actionWarning = 'Não alterei a tarefa: não encontrei um único registro correspondente. Informe o título exato.';
               }
               break;
 
             case 'reschedule_task':
-              if (onRescheduleTask) {
-                onRescheduleTask(act.searchTitleOrId, act.newDate);
+              if (
+                onRescheduleTask &&
+                typeof act.searchTitleOrId === 'string' && act.searchTitleOrId.trim() &&
+                typeof act.newDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(act.newDate)
+              ) {
+                const applied = onRescheduleTask(act.searchTitleOrId, act.newDate);
+                if (!applied) actionWarning = 'Não reagendei a tarefa: não encontrei um único registro correspondente. Informe o título exato.';
               }
               break;
 
             case 'delete_task':
-              if (onDeleteTask) {
-                onDeleteTask(act.searchTitleOrId);
-              }
+              // Ações da IA nunca apagam registros permanentemente.
               break;
 
             case 'add_goal':
-              if (onAddGoal) {
+              if (onAddGoal && typeof act.titulo === 'string' && act.titulo.trim()) {
                 onAddGoal({
                   titulo: act.titulo || 'Nova Meta',
                   descricao: act.descricao || '',
@@ -190,7 +201,7 @@ export const AIChatDrawer: React.FC<AIChatDrawerProps> = ({
       const aiMsg: AIChatMessage = {
         id: `ai-${Date.now()}`,
         sender: 'ai',
-        text: data.text || 'Anotei.',
+        text: actionWarning || data.text || 'Anotei.',
         timestamp: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
       };
 

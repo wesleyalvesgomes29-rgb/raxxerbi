@@ -40,6 +40,7 @@ import {
   INITIAL_TASKS,
   INITIAL_WEEKLY_REVIEWS,
 } from './utils/initialData';
+import { getSaoPauloDateString, getSaoPauloWeekday } from './utils/date';
 
 // Helper to sanitize local storage data and strip legacy seed or "Alex" references
 const getSanitizedLocalStorage = <T,>(key: string, fallback: T): T => {
@@ -138,16 +139,24 @@ export default function App() {
 
   // Keep daily history updated with real current task counts for today
   useEffect(() => {
-    const todayStr = new Date().toISOString().split('T')[0];
-    const dayName = new Date().toLocaleDateString('pt-BR', { weekday: 'long' });
+    const todayStr = getSaoPauloDateString();
+    const dayName = getSaoPauloWeekday();
     const capitalizedDay = dayName.charAt(0).toUpperCase() + dayName.slice(1);
 
-    const created = tasks.length;
-    const concluidas = tasks.filter((t) => t.concluida || t.status === 'concluida').length;
-    const pendentes = tasks.filter((t) => !t.concluida && t.status !== 'cancelada' && t.status !== 'adiada').length;
-    const adiadas = tasks.filter((t) => t.status === 'adiada').length;
-    const canceladas = tasks.filter((t) => t.status === 'cancelada').length;
-    const percentualExecucao = created > 0 ? Math.round((concluidas / created) * 100) : 0;
+    const created = tasks.filter((task) => task.dataCriacao === todayStr).length;
+    const concluidas = tasks.filter((task) => task.dataConclusao === todayStr).length;
+    const tarefasPlanejadasHoje = tasks.filter((task) => task.data === todayStr && task.status !== 'cancelada');
+    const pendentes = tarefasPlanejadasHoje.filter(
+      (task) => !task.concluida && task.status !== 'concluida' && task.status !== 'adiada'
+    ).length;
+    const adiadas = tasks.filter((task) => task.dataCriacao === todayStr && task.status === 'adiada').length;
+    const canceladas = tasks.filter((task) => task.dataCriacao === todayStr && task.status === 'cancelada').length;
+    const concluidasPlanejadasHoje = tarefasPlanejadasHoje.filter(
+      (task) => task.concluida || task.status === 'concluida'
+    ).length;
+    const percentualExecucao = tarefasPlanejadasHoje.length > 0
+      ? Math.round((concluidasPlanejadasHoje / tarefasPlanejadasHoje.length) * 100)
+      : 0;
 
     const todayLog: DailyHistoryLog = {
       data: todayStr,
@@ -174,19 +183,6 @@ export default function App() {
       return updated;
     });
   }, [tasks]);
-
-  // Purge any legacy demo or Alex data stored in localStorage on mount
-  useEffect(() => {
-    ['sb_profile', 'sb_memories', 'sb_tasks', 'sb_goals', 'sb_projects', 'sb_reviews', 'sb_chat_history', 'sb_daily_history'].forEach((key) => {
-      const val = localStorage.getItem(key);
-      if (val) {
-        if (val.includes('Alex') || val.includes('alex')) {
-          const cleaned = val.replace(/Alex/g, 'Wesley').replace(/alex/g, 'wesley');
-          localStorage.setItem(key, cleaned);
-        }
-      }
-    });
-  }, []);
 
   // UI Navigation & Modals State
   const [activeTab, setActiveTab] = useState<string>(() => getTabFromURL());
@@ -274,36 +270,18 @@ export default function App() {
           data: new Date().toISOString(),
           origin: 'interview',
         }));
-        setMemories(newMems);
+        setMemories((prev) => {
+          const existing = new Set(
+            prev.map((memory) => `${memory.titulo.trim().toLocaleLowerCase()}|${memory.conteudo.trim().toLocaleLowerCase()}`)
+          );
+          const uniqueNewMemories = newMems.filter(
+            (memory) => !existing.has(`${memory.titulo.trim().toLocaleLowerCase()}|${memory.conteudo.trim().toLocaleLowerCase()}`)
+          );
+          return [...uniqueNewMemories, ...prev];
+        });
       }
 
-      if (aiGeneratedData.goals && aiGeneratedData.goals.length > 0) {
-        const newGoals: GoalItem[] = aiGeneratedData.goals.map((g: any, idx: number) => ({
-          id: `goal-ai-${Date.now()}-${idx}`,
-          objetivo: g.objetivo,
-          prazo: g.prazo || '2026-12-31',
-          progresso: g.progresso || 10,
-          proximosPassos: g.proximosPassos || ['Começar primeiro passo'],
-          categoria: (g.categoria as MemoryCategory) || 'metas',
-          dataCriacao: new Date().toISOString().split('T')[0],
-          status: 'em_andamento',
-        }));
-        setGoals(newGoals);
-      }
 
-      if (aiGeneratedData.tasks && aiGeneratedData.tasks.length > 0) {
-        const newTasks: TaskItem[] = aiGeneratedData.tasks.map((t: any, idx: number) => ({
-          id: `task-ai-${Date.now()}-${idx}`,
-          titulo: t.titulo,
-          prioridade: (t.prioridade as TaskPriority) || 'importante',
-          status: 'pendente',
-          concluida: false,
-          data: new Date().toISOString().split('T')[0],
-          categoria: (t.categoria as MemoryCategory) || 'projetos',
-          dataCriacao: new Date().toISOString().split('T')[0],
-        }));
-        setTasks(newTasks);
-      }
     }
 
     setActiveTab('dashboard');
@@ -314,10 +292,10 @@ export default function App() {
     const item: TaskItem = {
       ...newTask,
       id: `task-${Date.now()}`,
-      data: newTask.data || new Date().toISOString().split('T')[0],
+      data: newTask.data || getSaoPauloDateString(),
       status: newTask.status || 'pendente',
       concluida: newTask.concluida || false,
-      dataCriacao: new Date().toISOString().split('T')[0],
+      dataCriacao: getSaoPauloDateString(),
     };
     setTasks((prev) => [item, ...prev]);
   };
@@ -330,46 +308,58 @@ export default function App() {
               ...t,
               concluida: !t.concluida,
               status: !t.concluida ? 'concluida' : 'pendente',
-              dataConclusao: !t.concluida ? new Date().toISOString().split('T')[0] : undefined,
+              dataConclusao: !t.concluida ? getSaoPauloDateString() : undefined,
             }
           : t
       )
     );
   };
 
-  const handleUpdateTaskStatus = (searchTitleOrId: string, status: TaskStatus) => {
-    setTasks((prev) => {
-      if (!searchTitleOrId) return prev;
-      const lower = searchTitleOrId.toLowerCase().trim();
-      const target = prev.find(
-        (t) => t.id === searchTitleOrId || t.titulo.toLowerCase().includes(lower) || lower.includes(t.titulo.toLowerCase())
-      );
-      if (!target) return prev;
-      return prev.map((t) =>
-        t.id === target.id
+  const handleUpdateTaskStatus = (searchTitleOrId: string, status: TaskStatus): boolean => {
+    const query = searchTitleOrId?.trim().toLocaleLowerCase();
+    if (!query) return false;
+
+    const exact = tasks.find(
+      (task) => task.id === searchTitleOrId || task.titulo.trim().toLocaleLowerCase() === query
+    );
+    const matches = tasks.filter(
+      (task) => task.titulo.toLocaleLowerCase().includes(query) || query.includes(task.titulo.toLocaleLowerCase())
+    );
+    const target = exact || (matches.length === 1 ? matches[0] : undefined);
+    if (!target) return false;
+
+    setTasks((prev) =>
+      prev.map((task) =>
+        task.id === target.id
           ? {
-              ...t,
+              ...task,
               status,
               concluida: status === 'concluida',
-              dataConclusao: status === 'concluida' ? new Date().toISOString().split('T')[0] : t.dataConclusao,
+              dataConclusao: status === 'concluida' ? getSaoPauloDateString() : task.dataConclusao,
             }
-          : t
-      );
-    });
+          : task
+      )
+    );
+    return true;
   };
 
-  const handleRescheduleTask = (searchTitleOrId: string, newDate: string) => {
-    setTasks((prev) => {
-      if (!searchTitleOrId) return prev;
-      const lower = searchTitleOrId.toLowerCase().trim();
-      const target = prev.find(
-        (t) => t.id === searchTitleOrId || t.titulo.toLowerCase().includes(lower) || lower.includes(t.titulo.toLowerCase())
-      );
-      if (!target) return prev;
-      return prev.map((t) =>
-        t.id === target.id ? { ...t, data: newDate, status: 'adiada' } : t
-      );
-    });
+  const handleRescheduleTask = (searchTitleOrId: string, newDate: string): boolean => {
+    const query = searchTitleOrId?.trim().toLocaleLowerCase();
+    if (!query || !/^\d{4}-\d{2}-\d{2}$/.test(newDate)) return false;
+
+    const exact = tasks.find(
+      (task) => task.id === searchTitleOrId || task.titulo.trim().toLocaleLowerCase() === query
+    );
+    const matches = tasks.filter(
+      (task) => task.titulo.toLocaleLowerCase().includes(query) || query.includes(task.titulo.toLocaleLowerCase())
+    );
+    const target = exact || (matches.length === 1 ? matches[0] : undefined);
+    if (!target) return false;
+
+    setTasks((prev) =>
+      prev.map((task) => task.id === target.id ? { ...task, data: newDate, status: 'adiada' } : task)
+    );
+    return true;
   };
 
   const handleDeleteTask = (idOrTitle: string) => {
@@ -392,7 +382,7 @@ export default function App() {
     const item: GoalItem = {
       ...newGoal,
       id: `goal-${Date.now()}`,
-      dataCriacao: new Date().toISOString().split('T')[0],
+      dataCriacao: getSaoPauloDateString(),
     };
     setGoals((prev) => [item, ...prev]);
   };
@@ -428,7 +418,7 @@ export default function App() {
     const item: ProjectItem = {
       ...newProject,
       id: `proj-${Date.now()}`,
-      dataAtualizacao: new Date().toISOString().split('T')[0],
+      dataAtualizacao: getSaoPauloDateString(),
     };
     setProjects((prev) => [item, ...prev]);
   };
