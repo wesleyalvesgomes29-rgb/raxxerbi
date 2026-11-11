@@ -1,0 +1,25 @@
+name: FC Intelligence - validation
+
+on:
+  push:
+    branches:
+      - feature/fc-intelligence
+  pull_request:
+    branches:
+      - feature/fc-intelligence
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build frontend
+        run: npm run build
