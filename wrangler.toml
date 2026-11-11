@@ -11,5 +11,5 @@ not_found_handling = "single-page-application"
 [[d1_databases]]
 binding = "DB"
 database_name = "fc-intelligence"
-database_id = "PREENCHER_COM_ID_DO_D1"
+database_id = "f15b4e39-b337-43d1-92ee-a739307b6287"
 migrations_dir = "migrations"
