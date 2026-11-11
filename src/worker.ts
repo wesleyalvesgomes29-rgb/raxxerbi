@@ -1,206 +1,22 @@
-import {
-  callGeminiREST,
-  buildChatPrompt,
-  buildOnboardingPrompt,
-  buildPrioritiesPrompt,
-  buildExtractMemoryPrompt,
-  buildWeeklyReviewPrompt,
-  CHAT_RESPONSE_SCHEMA,
-  ONBOARDING_RESPONSE_SCHEMA,
-  EXTRACT_MEMORY_RESPONSE_SCHEMA,
-  WEEKLY_REVIEW_RESPONSE_SCHEMA,
-} from './lib/raxxerPrompts';
-
-export interface Env {
-  GEMINI_API_KEY?: string;
-  ASSETS?: {
-    fetch: (request: Request) => Promise<Response>;
-  };
-}
-
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
-
-    // API Routes Handler
-    if (url.pathname.startsWith('/api/')) {
-      const apiKey = env.GEMINI_API_KEY;
-
-      const jsonResponse = (data: any, status = 200) => {
-        return new Response(JSON.stringify(data), {
-          status,
-          headers: {
-            'Content-Type': 'application/json',
-          },
-        });
-      };
-
-      if (url.pathname === '/api/health') {
-        return jsonResponse({ status: 'ok', runtime: 'cloudflare-worker' });
-      }
-
-      if (request.method !== 'POST') {
-        return jsonResponse({ error: 'Método não permitido. Utilize POST.' }, 405);
-      }
-
-      if (!apiKey) {
-        return jsonResponse(
-          {
-            error:
-              'Não consegui conectar à inteligência do RAXXER. A variável/secret GEMINI_API_KEY não foi configurada no Cloudflare Worker.',
-          },
-          500
-        );
-      }
-
-      try {
-        const body = (await request.json().catch(() => ({}))) as any;
-
-        // 1. Chat Principal do Secretário RAXXER
-        if (url.pathname === '/api/ai/chat') {
-          const message = body.message;
-          const context = body.context || {};
-          const profile = body.profile || context.profile;
-          const memories = body.memories || context.memories;
-          const goals = body.goals || context.goals;
-          let tasks = body.tasks || context.tasks;
-          if (!tasks && body.systemContext) {
-            try {
-              const parsed = JSON.parse(body.systemContext);
-              tasks = parsed.tasks;
-            } catch {}
-          }
-          const dailyHistory = body.dailyHistory || context.dailyHistory;
-          const chatHistory = body.chatHistory || context.chatHistory;
-
-          if (!message || typeof message !== 'string') {
-            return jsonResponse({ error: 'O campo "message" é obrigatório.' }, 400);
-          }
-
-          const prompt = buildChatPrompt({
-            message,
-            profile,
-            memories,
-            goals,
-            tasks,
-            dailyHistory,
-            chatHistory,
-          });
-
-          const rawResponse = await callGeminiREST({
-            apiKey,
-            prompt,
-            responseMimeType: 'application/json',
-            responseSchema: CHAT_RESPONSE_SCHEMA,
-          });
-
-          let text = rawResponse;
-          let actions: any[] = [];
-
-          try {
-            const parsed = JSON.parse(rawResponse);
-            if (parsed.text) text = parsed.text;
-            if (Array.isArray(parsed.actions)) actions = parsed.actions;
-          } catch {
-            // Se não for JSON estrito, o texto bruto é mantido
-          }
-
-          return jsonResponse({ text, actions });
-        }
-
-        // 2. Resumo de Onboarding
-        if (url.pathname === '/api/ai/onboarding-summary') {
-          const { profileAnswers } = body;
-          const prompt = buildOnboardingPrompt(profileAnswers || {});
-
-          const rawResponse = await callGeminiREST({
-            apiKey,
-            prompt,
-            responseMimeType: 'application/json',
-            responseSchema: ONBOARDING_RESPONSE_SCHEMA,
-          });
-
-          const parsed = JSON.parse(rawResponse || '{}');
-          return jsonResponse(parsed);
-        }
-
-        // 3. Análise de Prioridades do Dia
-        if (url.pathname === '/api/ai/priorities') {
-          const { profile, tasks, goals, memories } = body;
-          const prompt = buildPrioritiesPrompt({ profile, tasks, goals, memories });
-
-          const rawResponse = await callGeminiREST({
-            apiKey,
-            prompt,
-          });
-
-          return jsonResponse({ answer: rawResponse });
-        }
-
-        // 4. Extração de Memória
-        if (url.pathname === '/api/ai/extract-memory') {
-          const { inputStatement } = body;
-          const prompt = buildExtractMemoryPrompt(inputStatement || '');
-
-          const rawResponse = await callGeminiREST({
-            apiKey,
-            prompt,
-            responseMimeType: 'application/json',
-            responseSchema: EXTRACT_MEMORY_RESPONSE_SCHEMA,
-          });
-
-          const parsed = JSON.parse(rawResponse || '{}');
-          return jsonResponse(parsed);
-        }
-
-        // 5. Relatório / Revisão Semanal
-        if (url.pathname === '/api/ai/weekly-review') {
-          const { completedTasks, pendingTasks, goals, memories, weekName } = body;
-          const prompt = buildWeeklyReviewPrompt({
-            completedTasks,
-            pendingTasks,
-            goals,
-            memories,
-            weekName,
-          });
-
-          const rawResponse = await callGeminiREST({
-            apiKey,
-            prompt,
-            responseMimeType: 'application/json',
-            responseSchema: WEEKLY_REVIEW_RESPONSE_SCHEMA,
-          });
-
-          const parsed = JSON.parse(rawResponse || '{}');
-          return jsonResponse(parsed);
-        }
-
-        return jsonResponse({ error: 'Endpoint não encontrado.' }, 404);
-      } catch (err: any) {
-        console.error('Erro no Worker RAXXER:', err);
-        return jsonResponse(
-          {
-            error: `Erro ao comunicar com a Gemini API: ${err.message || 'Falha desconhecida.'}`,
-          },
-          500
-        );
-      }
-    }
-
-    // Servir Frontend SPA estático usando Cloudflare Worker Assets com fallback para rotas SPA
-    if (env.ASSETS) {
-      const response = await env.ASSETS.fetch(request);
-      // Se a rota não foi encontrada diretamente e é uma requisição GET para rota SPA (sem extensão de arquivo)
-      if (response.status === 404 && request.method === 'GET') {
-        const url = new URL(request.url);
-        if (!url.pathname.includes('.')) {
-          const indexRequest = new Request(new URL('/', request.url).toString(), request);
-          return env.ASSETS.fetch(indexRequest);
-        }
-      }
-      return response;
-    }
-
-    return new Response('Not found', { status: 404 });
-  },
-};
+export interface Env { DB:D1Database; GEMINI_API_KEY?:string; FC_SETUP_KEY?:string; ASSETS?:{fetch:(request:Request)=>Promise<Response>} }
+type User={id:string;name:string;email:string;password_hash:string;group_id:string};
+const headers={"Content-Type":"application/json","Cache-Control":"no-store"};
+const json=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status,headers});
+const hex=(b:ArrayBuffer)=>Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,"0")).join("");
+async function digest(v:string){return hex(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(v)))}
+async function passwordHash(p:string,s=crypto.randomUUID().replace(/-/g,"")){const k=await crypto.subtle.importKey("raw",new TextEncoder().encode(p),"PBKDF2",false,["deriveBits"]);const b=await crypto.subtle.deriveBits({name:"PBKDF2",salt:new TextEncoder().encode(s),iterations:210000,hash:"SHA-256"},k,256);return s+":"+hex(b)}
+async function verify(p:string,h:string){const [s]=h.split(":");return await passwordHash(p,s)===h}
+async function currentUser(req:Request,env:Env):Promise<User|null>{const token=req.headers.get("Authorization")?.replace(/^Bearer\s+/i,"");if(!token)return null;return await env.DB.prepare("SELECT u.id,u.name,u.email,u.password_hash,u.group_id FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>datetime('now')").bind(await digest(token)).first<User>()}
+export default {async fetch(request:Request,env:Env):Promise<Response>{const url=new URL(request.url);if(url.pathname==="/api/health")return json({status:"ok",app:"fc-intelligence",database:!!env.DB});
+if(url.pathname.startsWith("/api/")){if(!env.DB)return json({error:"Banco de dados não configurado."},503);try{
+if(url.pathname==="/api/setup/users"&&request.method==="POST"){if(!env.FC_SETUP_KEY||request.headers.get("X-FC-Setup-Key")!==env.FC_SETUP_KEY)return json({error:"Não autorizado."},401);const b=await request.json() as any;if(!b.name||!b.email||!b.password||!b.groupId||String(b.password).length<10)return json({error:"Informe nome, e-mail, grupo e senha com pelo menos 10 caracteres."},400);const id=crypto.randomUUID();await env.DB.prepare("INSERT INTO users(id,name,email,password_hash,group_id) VALUES(?,?,?,?,?)").bind(id,String(b.name),String(b.email).toLowerCase(),await passwordHash(String(b.password)),String(b.groupId)).run();return json({id,name:b.name,email:String(b.email).toLowerCase()},201)}
+if(url.pathname==="/api/auth/login"&&request.method==="POST"){const b=await request.json() as any;const u=await env.DB.prepare("SELECT * FROM users WHERE email=?").bind(String(b.email||"").toLowerCase().trim()).first<User>();if(!u||!(await verify(String(b.password||""),u.password_hash)))return json({error:"E-mail ou senha inválidos."},401);const token=crypto.randomUUID()+crypto.randomUUID();await env.DB.prepare("INSERT INTO sessions(id,user_id,token_hash,expires_at) VALUES(?,?,?,datetime('now','+30 days'))").bind(crypto.randomUUID(),u.id,await digest(token)).run();return json({token,user:{id:u.id,name:u.name,email:u.email,groupId:u.group_id}})}
+if(url.pathname==="/api/auth/logout"&&request.method==="POST"){const t=request.headers.get("Authorization")?.replace(/^Bearer\s+/i,"");if(t)await env.DB.prepare("DELETE FROM sessions WHERE token_hash=?").bind(await digest(t)).run();return json({ok:true})}
+const u=await currentUser(request,env);if(!u)return json({error:"Faça login para continuar."},401);
+if(url.pathname==="/api/auth/me"&&request.method==="GET")return json({id:u.id,name:u.name,email:u.email,groupId:u.group_id});
+if(url.pathname==="/api/entries"&&request.method==="GET"){const r=await env.DB.prepare("SELECT id,type,person,title,date,value,note,created_at,updated_at FROM entries WHERE group_id=? ORDER BY date DESC,created_at DESC").bind(u.group_id).all();return json({entries:r.results})}
+if(url.pathname==="/api/entries"&&request.method==="POST"){const b=await request.json() as any;if(!["Comissão","Bônus"].includes(b.type)||!["Fabrício","Carol"].includes(b.person)||!String(b.title||"").trim()||!/^\d{4}-\d{2}-\d{2}$/.test(b.date)||!Number.isFinite(Number(b.value))||Number(b.value)<=0)return json({error:"Confira categoria, beneficiário, descrição, data e valor."},400);const id=crypto.randomUUID();await env.DB.prepare("INSERT INTO entries(id,group_id,user_id,type,person,title,date,value,note) VALUES(?,?,?,?,?,?,?,?,?)").bind(id,u.group_id,u.id,b.type,b.person,String(b.title).trim(),b.date,Number(b.value),b.note||null).run();await env.DB.prepare("INSERT INTO audit_log(id,group_id,user_id,action,entity_id,details) VALUES(?,?,?,?,?,?)").bind(crypto.randomUUID(),u.group_id,u.id,"create",id,JSON.stringify({type:b.type,value:Number(b.value)})).run();return json({id,...b},201)}
+const m=url.pathname.match(/^\/api\/entries\/([a-f0-9-]+)$/i);if(m&&request.method==="DELETE"){const id=m[1];const exists=await env.DB.prepare("SELECT id FROM entries WHERE id=? AND group_id=?").bind(id,u.group_id).first();if(!exists)return json({error:"Lançamento não encontrado."},404);await env.DB.prepare("DELETE FROM entries WHERE id=? AND group_id=?").bind(id,u.group_id).run();await env.DB.prepare("INSERT INTO audit_log(id,group_id,user_id,action,entity_id,details) VALUES(?,?,?,?,?,?)").bind(crypto.randomUUID(),u.group_id,u.id,"delete",id,"{}").run();return json({ok:true})}
+if(url.pathname==="/api/ai/chat"&&request.method==="POST"){if(!env.GEMINI_API_KEY)return json({error:"Gemini ainda não configurado."},503);const b=await request.json() as any;if(!String(b.message||"").trim())return json({error:"Escreva uma pergunta."},400);const r=await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key="+env.GEMINI_API_KEY,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{parts:[{text:"Você é o FC Intelligence, analista financeiro de Fabrício e Carol. Responda em português, sem inventar números. Lançamentos: "+JSON.stringify(b.entries||[])+"\nPergunta: "+b.message}]}]})});const d=await r.json() as any;if(!r.ok)return json({error:"Falha ao consultar Gemini."},502);return json({answer:d.candidates?.[0]?.content?.parts?.[0]?.text||"Não consegui responder."})}
+return json({error:"Endpoint não encontrado."},404)}catch(e){console.error("FC API",e);return json({error:"Erro interno ao processar a solicitação."},500)}}
+if(env.ASSETS){const r=await env.ASSETS.fetch(request);if(r.status===404&&request.method==="GET"&&!url.pathname.includes("."))return env.ASSETS.fetch(new Request(new URL("/",request.url),request));return r}return new Response("Not found",{status:404})}};
